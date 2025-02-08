@@ -15,6 +15,7 @@
     "@types/react-resizable": "^3.0.8",
     "axios": "^1.7.9",
     "cn": "^0.1.1",
+    "lodash.debounce": "^4.0.8",
     "lucide-react": "^0.474.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

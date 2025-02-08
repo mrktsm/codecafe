@@ -60,32 +60,15 @@ interface User {
   };
 }
 
-// const users: User[] = [
-// {
-//   id: "user1",
-//   name: "John",
-//   color: "#ff7800", // Orange
-//   cursorPosition: { lineNumber: 2, column: 10 },
-//   selection: {
-//     startLineNumber: 2,
-//     startColumn: 1,
-//     endLineNumber: 3,
-//     endColumn: 15,
-//   },
-// },
-// {
-//   id: "user2",
-//   name: "Alice",
-//   color: "#00a2ff", // Blue
-//   cursorPosition: { lineNumber: 3, column: 10 },
-//   selection: {
-//     startLineNumber: 3,
-//     startColumn: 5,
-//     endLineNumber: 4,
-//     endColumn: 10,
-//   },
-// },
-// ];
+// Utility function to generate a random color in hex format
+const generateRandomColor = (): string => {
+  const letters = "0123456789ABCDEF";
+  let color = "#";
+  for (let i = 0; i < 6; i++) {
+    color += letters[Math.floor(Math.random() * 16)];
+  }
+  return color;
+};
 
 const App: React.FC = () => {
   const [code, setCode] = useState<string>("// Hello there");
@@ -93,7 +76,10 @@ const App: React.FC = () => {
   const [height, setHeight] = useState(window.innerHeight * 0.25);
   const [width, setWidth] = useState(window.innerWidth * 0.75);
   const [users, setUsers] = useState<User[]>([]);
-
+  const [id, setId] = useState<string>(Date.now().toString());
+  const [name, setName] = useState<string>(Date.now().toString());
+  // Use a random color for this frontend instance
+  const [color] = useState<string>(generateRandomColor());
   const stompClientRef = useRef<Stomp.Client | null>(null);
 
   const screenSixteenth = {
@@ -122,11 +108,11 @@ const App: React.FC = () => {
   };
 
   const sendCursorData = (cursorData: CursorData) => {
-    const message = {
-      code: null,
+    const cursorMessage = {
       user: {
-        name: "Alice",
-        color: "#00FF00",
+        id: id,
+        name: name,
+        color: color, // use the randomly generated color for this instance
         cursor: {
           cursorPosition: cursorData.cursorPosition,
           selection: cursorData.selection,
@@ -134,7 +120,7 @@ const App: React.FC = () => {
       },
     };
     if (stompClientRef.current && stompClientRef.current.connected) {
-      stompClientRef.current?.send("/app/message", {}, JSON.stringify(message));
+      stompClientRef.current.send("/app/cursor", {}, JSON.stringify(cursorMessage));
     }
   };
 
@@ -171,22 +157,47 @@ const App: React.FC = () => {
         if (messageData.user) {
           setUsers((prevUsers) => {
             const updatedUser: User = {
-              id: "1",
+              id: messageData.user.id, // use id sent from the sender
+              name: messageData.user.name, // use name from the sender
+              color: messageData.user.color,
+              cursorPosition: messageData.user.cursor.cursorPosition,
+              selection: messageData.user.cursor.selection || undefined,
+            };
+
+            // Update the user if it already exists
+            const existingUser = prevUsers.find((u) => u.id === updatedUser.id);
+            if (existingUser) {
+              return prevUsers.map((user) =>
+                user.id === updatedUser.id ? updatedUser : user
+              );
+            }
+
+            // Otherwise, add as a new user
+            return [...prevUsers, updatedUser];
+          });
+        }
+      });
+
+      // New subscription for cursor updates:
+      stompClient.subscribe("/topic/cursors", function (message: any) {
+        const messageData = JSON.parse(message.body);
+        console.log("Received cursor update: ", messageData);
+        if (messageData.user) {
+          setUsers((prevUsers) => {
+            const updatedUser: User = {
+              id: messageData.user.id,
               name: messageData.user.name,
               color: messageData.user.color,
               cursorPosition: messageData.user.cursor.cursorPosition,
               selection: messageData.user.cursor.selection || undefined,
             };
 
-            // If we already have a user with ID "1", update it
-            const existingUser = prevUsers.find((u) => u.id === "1");
+            const existingUser = prevUsers.find((u) => u.id === updatedUser.id);
             if (existingUser) {
               return prevUsers.map((user) =>
-                user.id === "1" ? updatedUser : user
+                user.id === updatedUser.id ? updatedUser : user
               );
             }
-
-            // Otherwise, add the new user
             return [...prevUsers, updatedUser];
           });
         }

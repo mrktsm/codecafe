@@ -126,15 +126,21 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
 
   // Handle code updates
   useEffect(() => {
-    if (editorRef.current && code !== undefined) {
-      const currentValue = editorRef.current.getValue();
-      if (currentValue !== code && !isUpdatingRef.current) {
-        isUpdatingRef.current = true;
-        editorRef.current.setValue(code);
-        isUpdatingRef.current = false;
+  if (editorRef.current && code !== undefined) {
+    const currentValue = editorRef.current.getValue();
+    if (currentValue !== code && !isUpdatingRef.current) {
+      // Save the current view state (includes selection and scroll)
+      const viewState = editorRef.current.saveViewState();
+      isUpdatingRef.current = true;
+      editorRef.current.setValue(code);
+      // Restore the view state if available
+      if (viewState) {
+        editorRef.current.restoreViewState(viewState);
       }
+      isUpdatingRef.current = false;
     }
-  }, [code]);
+  }
+}, [code]);
 
   const updateDecorations = () => {
     if (!editorRef.current) return;
