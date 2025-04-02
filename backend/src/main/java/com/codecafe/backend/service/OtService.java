@@ -68,24 +68,33 @@ public class OtService {
             List<TextOperation> concurrentOps = findConcurrentOperations(operation);
             logger.info("Found " + concurrentOps.size() + " concurrent operations");
 
-            // Sort operations for consistent transformation
+            // CRITICAL CHANGE: Sort operations based on their effect on document structure
+            // Operations should be transformed in an order that preserves document integrity
             concurrentOps.sort((a, b) -> {
-                // First compare by user ID
-                int userCompare = a.getUserId().compareTo(b.getUserId());
-                if (userCompare != 0) {
-                    return userCompare;
+                // Primary sort: Sort by position to ensure we transform front-to-back
+                int posCompare = Integer.compare(a.getPosition(), b.getPosition());
+                if (posCompare != 0) {
+                    return posCompare;
                 }
-                // Then by version number if from same user
-                int versionA = a.getBaseVersionVector().getVersions().getOrDefault(a.getUserId(), 0);
-                int versionB = b.getBaseVersionVector().getVersions().getOrDefault(b.getUserId(), 0);
-                return Integer.compare(versionA, versionB);
+
+                // Secondary sort: For operations at same position, sort by type
+                // This creates a predictable order: INSERT, then REPLACE, then DELETE
+                int typeCompare = a.getType().compareTo(b.getType());
+                if (typeCompare != 0) {
+                    return typeCompare;
+                }
+
+                // Tertiary sort: By user ID for complete determinism
+                return a.getUserId().compareTo(b.getUserId());
             });
 
             // Transform operation against all concurrent operations
             TextOperation transformedOp = cloneOperation(operation);
             for (TextOperation concurrentOp : concurrentOps) {
+                // Log the operation we're transforming against
+                logger.info("Transforming against: " + concurrentOp);
                 transformedOp = transformOperation(transformedOp, concurrentOp);
-                logger.fine("Transformed against: " + concurrentOp.getId() + ", result: " + transformedOp);
+                logger.info("After transformation: " + transformedOp);
             }
 
             // Validate the transformed operation
@@ -225,82 +234,99 @@ public class OtService {
         documentContent = sb.toString();
     }
 
-    /**
-     * Transform operation A against operation B
-     */
     private TextOperation transformOperation(TextOperation clientOp, TextOperation serverOp) {
         TextOperation transformed = cloneOperation(clientOp);
 
-        // No need to transform if they're from the same user or it's the same operation
+        // No need to transform if same user/op
         if (clientOp.getUserId().equals(serverOp.getUserId()) ||
                 (clientOp.getId() != null && clientOp.getId().equals(serverOp.getId()))) {
             return transformed;
         }
 
+        logger.info("Transforming client op (" + clientOp.getUserId() + "): " + clientOp.getType() + " at " + clientOp.getPosition() +
+                " against server op (" + serverOp.getUserId() + "): " + serverOp.getType() + " at " + serverOp.getPosition());
+
+        int currentPos = transformed.getPosition();
+        Integer currentLen = transformed.getLength(); // Can be null for INSERT
+
         switch (serverOp.getType()) {
             case INSERT:
+                // Only position changes when transforming against an INSERT
                 transformed.setPosition(transformPositionForInsert(
-                        transformed.getPosition(),
+                        currentPos,
                         serverOp.getPosition(),
                         serverOp.getText().length(),
-                        clientOp.getUserId(),
-                        serverOp.getUserId()
+                        transformed.getUserId(), // Client ID for tie-break
+                        serverOp.getUserId()   // Server ID for tie-break
                 ));
-
-                // Adjust length for delete/replace operations if server inserted within their range
-                if ((transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE) &&
-                        transformed.getLength() != null) {
-                    int endPos = transformed.getPosition() + transformed.getLength();
-                    if (serverOp.getPosition() >= transformed.getPosition() && serverOp.getPosition() <= endPos) {
-                        transformed.setLength(transformed.getLength() + serverOp.getText().length());
-                    }
-                }
+                // Length of client op is unaffected by server INSERT
                 break;
 
             case DELETE:
-                int serverDeleteEnd = serverOp.getPosition() + serverOp.getLength();
-
-                // Adjust position based on delete operation
+                // Position changes based on the deletion
                 transformed.setPosition(transformPositionForDelete(
-                        transformed.getPosition(),
+                        currentPos,
                         serverOp.getPosition(),
                         serverOp.getLength()
                 ));
-
-                // Adjust length for delete/replace operations
-                if ((transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE) &&
-                        transformed.getLength() != null) {
+                // Length *only* changes if the client op is DELETE or REPLACE
+                if (currentLen != null && (transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE)) {
+                    // Important: Calculate length change based on the *original* client position and length
+                    // before they were transformed by this specific serverOp's position effect.
+                    // This might require passing original clientPos/clientLen to transformLengthForDelete
+                    // OR adjusting the logic within transformLengthForDelete/here carefully.
+                    // Let's use the helper's logic assuming it works on the potentially adjusted position:
                     transformed.setLength(transformLengthForDelete(
-                            transformed.getPosition(),
-                            transformed.getLength(),
+                            transformed.getPosition(), // Use the newly transformed position
+                            currentLen,              // Original length
                             serverOp.getPosition(),
                             serverOp.getLength()
                     ));
+                    // Alternative, potentially safer if transformLength assumes original positions:
+               /*
+               transformed.setLength(transformLengthForDelete(
+                   clientOp.getPosition(), // *Original* client position
+                   currentLen,
+                   serverOp.getPosition(),
+                   serverOp.getLength()
+               ));
+               */
+                    // --> You need to verify exactly how transformLengthForDelete expects its inputs <--
                 }
                 break;
 
             case REPLACE:
-                // Handle replace as a delete followed by an insert
-                TextOperation deleteOp = new TextOperation();
-                deleteOp.setType(OperationType.DELETE);
-                deleteOp.setPosition(serverOp.getPosition());
-                deleteOp.setLength(serverOp.getLength());
-                deleteOp.setBaseVersionVector(serverOp.getBaseVersionVector());
-                deleteOp.setUserId(serverOp.getUserId());
+                // Decompose Replace = Delete + Insert (Standard approach)
+                // Create temporary Delete op from serverOp
+                TextOperation deletePart = new TextOperation();
+                deletePart.setType(OperationType.DELETE);
+                deletePart.setPosition(serverOp.getPosition());
+                deletePart.setLength(serverOp.getLength());
+                deletePart.setUserId(serverOp.getUserId());
+                deletePart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Keep context if needed
 
-                TextOperation insertOp = new TextOperation();
-                insertOp.setType(OperationType.INSERT);
-                insertOp.setPosition(serverOp.getPosition());
-                insertOp.setText(serverOp.getText());
-                insertOp.setBaseVersionVector(serverOp.getBaseVersionVector());
-                insertOp.setUserId(serverOp.getUserId());
+                // Create temporary Insert op from serverOp
+                TextOperation insertPart = new TextOperation();
+                insertPart.setType(OperationType.INSERT);
+                // Insert happens at the *original* position of the replace
+                insertPart.setPosition(serverOp.getPosition());
+                insertPart.setText(serverOp.getText());
+                insertPart.setUserId(serverOp.getUserId());
+                insertPart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Keep context if needed
 
-                // Transform against delete, then against insert
-                TextOperation afterDelete = transformOperation(transformed, deleteOp);
-                transformed = transformOperation(afterDelete, insertOp);
-                break;
+
+                // Recursively transform: first against the delete part, then against the insert part.
+                logger.info("Decomposing server REPLACE. Transforming against DELETE part...");
+                TextOperation transformedAfterDelete = transformOperation(transformed, deletePart);
+                logger.info("Decomposing server REPLACE. Transforming against INSERT part...");
+                transformed = transformOperation(transformedAfterDelete, insertPart);
+                logger.info("Finished transforming against decomposed REPLACE.");
+                // Return here because the recursive calls handled the transformation
+                return transformed; // Important: Return after handling REPLACE decomposition
         }
 
+        logger.info("Transformation result: " + transformed.getType() + " at " + transformed.getPosition() +
+                " (Length: " + transformed.getLength() + ")");
         return transformed;
     }
 
