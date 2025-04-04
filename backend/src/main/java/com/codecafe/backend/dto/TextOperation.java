@@ -10,9 +10,18 @@ public class TextOperation {
     private Integer length;
     private VersionVector baseVersionVector;
     private String userId;
+    private int lineNumber;
 
     public TextOperation() {
         // Default constructor
+    }
+
+    public int getLineNumber() {
+        return lineNumber;
+    }
+
+    public void setLineNumber(int lineNumber) {
+        this.lineNumber = lineNumber;
     }
 
     public String getId() {

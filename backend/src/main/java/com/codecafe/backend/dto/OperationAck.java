@@ -4,8 +4,17 @@ public class OperationAck {
     private String operationId;
     private VersionVector versionVector;
     private String userId;
+    private int lineNumber;
 
     public OperationAck() {
+    }
+
+    public int getLineNumber() {
+        return lineNumber;
+    }
+
+    public void setLineNumber(int lineNumber) {
+        this.lineNumber = lineNumber;
     }
 
     public OperationAck(String operationId, VersionVector versionVector, String userId) {

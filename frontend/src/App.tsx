@@ -19,7 +19,7 @@ import {
   TextOperation,
   TextOperationManager,
   OperationAck,
-  VersionVector,
+  VersionVectors,
 } from "./TextOperationSystem";
 import { User } from "./types/user";
 import { CodeExecutionRequest, CodeExecutionResponse } from "./types/code";
@@ -34,9 +34,9 @@ const App = () => {
   const [editorHeight, setEditorHeight] = useState(window.innerHeight);
   const [users, setUsers] = useState<User[]>([]);
   // In App.js
-  const [localVersionVector, setLocalVersionVector] = useState<{
-    [userId: string]: number;
-  }>({});
+  const [localVersionVector, setLocalVersionVector] = useState<VersionVectors>(
+    {}
+  );
   // const [pendingLocalChanges, setPendingLocalChanges] = useState<string | null>(
   //   null
   // );
@@ -299,7 +299,16 @@ const App = () => {
             operationManagerRef.current.acknowledgeOperation(ack);
           }
           if (ack.userId === id) {
-            setLocalVersionVector(ack.baseVersionVector);
+            // Update only the specific line's version vector
+            setLocalVersionVector((prev) => ({
+              ...prev,
+              [ack.lineNumber]: ack.baseVersionVector,
+            }));
+            if (operationManagerRef.current) {
+              operationManagerRef.current.setVersionVector({
+                [ack.lineNumber]: ack.baseVersionVector,
+              });
+            }
           }
         });
 
@@ -310,7 +319,18 @@ const App = () => {
             const documentState = JSON.parse(message.body);
             console.log("Received personal document state:", documentState);
             setCode(documentState.content);
-            setLocalVersionVector(documentState.versionVector);
+
+            // Ensure versionVector is in the correct format
+            const versionVectors =
+              documentState.versionVector?.versions ||
+              documentState.versionVector ||
+              {};
+            setLocalVersionVector(versionVectors);
+
+            if (operationManagerRef.current) {
+              operationManagerRef.current.setVersionVector(versionVectors);
+            }
+
             if (
               documentState.missingOperations &&
               documentState.missingOperations.length > 0
@@ -320,25 +340,6 @@ const App = () => {
                   operationManagerRef.current.applyOperation(op);
                 }
               });
-            }
-            if (operationManagerRef.current) {
-              // When receiving a document state
-              if (
-                documentState.versionVector &&
-                documentState.versionVector.versions
-              ) {
-                // If it has a 'versions' property, use that
-                setLocalVersionVector(documentState.versionVector.versions);
-                operationManagerRef.current.setVersionVector(
-                  documentState.versionVector.versions
-                );
-              } else {
-                // Otherwise use as is
-                setLocalVersionVector(documentState.versionVector);
-                operationManagerRef.current.setVersionVector(
-                  documentState.versionVector
-                );
-              }
             }
           }
         );
@@ -375,20 +376,14 @@ const App = () => {
                 }
               });
             }
-            setLocalVersionVector(syncResponse.serverVersionVector);
-            if (
-              operationManagerRef.current &&
-              syncResponse.serverVersionVector
-            ) {
-              if (syncResponse.serverVersionVector.versions) {
-                operationManagerRef.current.setVersionVector(
-                  syncResponse.serverVersionVector.versions
-                );
-              } else {
-                operationManagerRef.current.setVersionVector(
-                  syncResponse.serverVersionVector
-                );
-              }
+
+            const serverVersionVector =
+              syncResponse.serverVersionVector?.versions ||
+              syncResponse.serverVersionVector ||
+              {};
+            setLocalVersionVector(serverVersionVector);
+            if (operationManagerRef.current) {
+              operationManagerRef.current.setVersionVector(serverVersionVector);
             }
             pendingOperationsRef.current = {};
           }

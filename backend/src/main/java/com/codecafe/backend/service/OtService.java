@@ -17,110 +17,124 @@ public class OtService {
     private static final Logger logger = Logger.getLogger(OtService.class.getName());
     private static final int MAX_HISTORY_SIZE = 500;
 
-    private String documentContent = "";
-    private VersionVector serverVersionVector = new VersionVector(new HashMap<>());
-    private final List<TextOperation> operationHistory = new ArrayList<>();
+    // Document as a list of lines (line numbers are 0-based)
+    private List<String> documentLines = new ArrayList<>();
+    // Version vectors per line
+    private Map<Integer, VersionVector> lineVersionVectors = new HashMap<>();
+    // Operation history per line
+    private Map<Integer, List<TextOperation>> lineOperationHistory = new HashMap<>();
     private final ReentrantLock lock = new ReentrantLock();
 
+    public OtService() {
+        // Initialize with an empty line
+        documentLines.add("");
+        lineVersionVectors.put(0, new VersionVector(new HashMap<>()));
+        lineOperationHistory.put(0, new ArrayList<>());
+    }
+
     /**
-     * Gets the current document content
+     * Gets the current document content as a single string
      */
     public String getDocumentContent() {
         lock.lock();
         try {
-            return documentContent;
+            return String.join("\n", documentLines);
         } finally {
             lock.unlock();
         }
     }
 
     /**
-     * Gets the current server version vector
+     * Gets the current document content as a list of lines
      */
-    public VersionVector getServerVersionVector() {
+    public List<String> getDocumentLines() {
         lock.lock();
         try {
-            return new VersionVector(new HashMap<>(serverVersionVector.getVersions()));
+            return new ArrayList<>(documentLines);
         } finally {
             lock.unlock();
         }
     }
 
     /**
-     * Process an incoming operation, transform if necessary, and apply to document
-     *
-     * @param operation The operation to process
-     * @return The operation with updated version vector
+     * Gets the version vectors for all lines
+     */
+    public Map<Integer, VersionVector> getLineVersionVectors() {
+        lock.lock();
+        try {
+            Map<Integer, VersionVector> copy = new HashMap<>();
+            for (Map.Entry<Integer, VersionVector> entry : lineVersionVectors.entrySet()) {
+                copy.put(entry.getKey(), new VersionVector(new HashMap<>(entry.getValue().getVersions())));
+            }
+            return copy;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Process an incoming operation, transform if necessary, and apply to the specific line
      */
     public TextOperation processOperation(TextOperation operation) {
         lock.lock();
         try {
             logger.info("Processing operation: " + operation);
+            int lineNumber = operation.getLineNumber() - 1; // Convert to 0-based index
             String userId = operation.getUserId();
 
-            // Handle case of null version vector
+            // Ensure the line exists
+            ensureLineExists(lineNumber);
+
+            // Handle null version vector
             if (operation.getBaseVersionVector() == null || operation.getBaseVersionVector().getVersions() == null) {
-                VersionVector initialVector = new VersionVector(new HashMap<>());
-                operation.setBaseVersionVector(initialVector);
+                operation.setBaseVersionVector(new VersionVector(new HashMap<>()));
             }
 
-            // Find concurrent operations not known to the client
-            List<TextOperation> concurrentOps = findConcurrentOperations(operation);
-            logger.info("Found " + concurrentOps.size() + " concurrent operations");
+            // Find concurrent operations for this line
+            List<TextOperation> concurrentOps = findConcurrentOperations(operation, lineNumber);
+            logger.info("Found " + concurrentOps.size() + " concurrent operations for line " + (lineNumber + 1));
 
-            // CRITICAL CHANGE: Sort operations based on their effect on document structure
-            // Operations should be transformed in an order that preserves document integrity
+            // Sort concurrent operations
             concurrentOps.sort((a, b) -> {
-                // Primary sort: Sort by position to ensure we transform front-to-back
                 int posCompare = Integer.compare(a.getPosition(), b.getPosition());
-                if (posCompare != 0) {
-                    return posCompare;
-                }
-
-                // Secondary sort: For operations at same position, sort by type
-                // This creates a predictable order: INSERT, then REPLACE, then DELETE
+                if (posCompare != 0) return posCompare;
                 int typeCompare = a.getType().compareTo(b.getType());
-                if (typeCompare != 0) {
-                    return typeCompare;
-                }
-
-                // Tertiary sort: By user ID for complete determinism
+                if (typeCompare != 0) return typeCompare;
                 return a.getUserId().compareTo(b.getUserId());
             });
 
-            // Transform operation against all concurrent operations
+            // Transform operation against concurrent operations
             TextOperation transformedOp = cloneOperation(operation);
             for (TextOperation concurrentOp : concurrentOps) {
-                // Log the operation we're transforming against
                 logger.info("Transforming against: " + concurrentOp);
                 transformedOp = transformOperation(transformedOp, concurrentOp);
                 logger.info("After transformation: " + transformedOp);
             }
 
             // Validate the transformed operation
-            validateOperation(transformedOp);
+            validateOperation(transformedOp, lineNumber);
 
-            // Apply the operation to the document
-            applyOperation(transformedOp);
+            // Apply the operation to the line
+            applyOperation(transformedOp, lineNumber);
 
-            // Create a new version vector that includes this operation
-            Map<String, Integer> newVersions = new HashMap<>(serverVersionVector.getVersions());
+            // Update version vector for this line
+            VersionVector lineVector = lineVersionVectors.get(lineNumber);
+            Map<String, Integer> newVersions = new HashMap<>(lineVector.getVersions());
             int userVersion = newVersions.getOrDefault(userId, 0) + 1;
             newVersions.put(userId, userVersion);
-            VersionVector newServerVector = new VersionVector(newVersions);
-
-            // Update server state and operation
-            serverVersionVector = newServerVector;
+            VersionVector newLineVector = new VersionVector(newVersions);
+            lineVersionVectors.put(lineNumber, newLineVector);
             transformedOp.setBaseVersionVector(new VersionVector(newVersions));
 
-            // Add to history with pruning if needed
-            operationHistory.add(transformedOp);
-            if (operationHistory.size() > MAX_HISTORY_SIZE) {
-                operationHistory.subList(0, operationHistory.size() - MAX_HISTORY_SIZE / 2).clear();
+            // Add to line history with pruning
+            List<TextOperation> history = lineOperationHistory.get(lineNumber);
+            history.add(transformedOp);
+            if (history.size() > MAX_HISTORY_SIZE) {
+                history.subList(0, history.size() - MAX_HISTORY_SIZE / 2).clear();
             }
 
-            logger.info("New document state: " + documentContent);
-            logger.info("New server version vector: " + serverVersionVector);
+            logger.info("New line " + (lineNumber + 1) + " state: " + documentLines.get(lineNumber));
+            logger.info("New version vector for line " + (lineNumber + 1) + ": " + newLineVector);
             return transformedOp;
         } finally {
             lock.unlock();
@@ -128,9 +142,21 @@ public class OtService {
     }
 
     /**
-     * Find operations that are concurrent with the given operation
+     * Ensure the document has enough lines up to the given line number
      */
-    private List<TextOperation> findConcurrentOperations(TextOperation operation) {
+    private void ensureLineExists(int lineNumber) {
+        while (documentLines.size() <= lineNumber) {
+            documentLines.add("");
+            int newLineNumber = documentLines.size() - 1;
+            lineVersionVectors.put(newLineNumber, new VersionVector(new HashMap<>()));
+            lineOperationHistory.put(newLineNumber, new ArrayList<>());
+        }
+    }
+
+    /**
+     * Find concurrent operations for a specific line
+     */
+    private List<TextOperation> findConcurrentOperations(TextOperation operation, int lineNumber) {
         List<TextOperation> concurrent = new ArrayList<>();
         VersionVector clientVector = operation.getBaseVersionVector();
 
@@ -138,13 +164,11 @@ public class OtService {
             return new ArrayList<>();
         }
 
-        for (TextOperation historyOp : operationHistory) {
-            // Skip our own operations
+        List<TextOperation> history = lineOperationHistory.getOrDefault(lineNumber, new ArrayList<>());
+        for (TextOperation historyOp : history) {
             if (historyOp.getUserId().equals(operation.getUserId())) {
                 continue;
             }
-
-            // Check if operations are concurrent
             if (isConcurrent(operation, historyOp)) {
                 concurrent.add(historyOp);
             }
@@ -153,7 +177,7 @@ public class OtService {
     }
 
     /**
-     * Check if two operations are concurrent (neither happened before the other)
+     * Check if two operations are concurrent
      */
     private boolean isConcurrent(TextOperation opA, TextOperation opB) {
         return !happenedBefore(opA, opB) && !happenedBefore(opB, opA);
@@ -166,18 +190,14 @@ public class OtService {
         VersionVector vectorA = opA.getBaseVersionVector();
         VersionVector vectorB = opB.getBaseVersionVector();
 
-        // Skip if either vector is null
-        if (vectorA == null || vectorB == null ||
-                vectorA.getVersions() == null || vectorB.getVersions() == null) {
+        if (vectorA == null || vectorB == null || vectorA.getVersions() == null || vectorB.getVersions() == null) {
             return false;
         }
 
-        // Check if B knows about all changes in A
         boolean hasChangesNotInB = false;
         for (String userId : vectorA.getVersions().keySet()) {
             int versionInA = vectorA.getVersions().get(userId);
             int versionInB = vectorB.getVersions().getOrDefault(userId, 0);
-
             if (versionInA > versionInB) {
                 hasChangesNotInB = true;
                 break;
@@ -188,11 +208,9 @@ public class OtService {
             return false;
         }
 
-        // Check if B has additional changes not in A
         for (String userId : vectorB.getVersions().keySet()) {
             int versionInB = vectorB.getVersions().get(userId);
             int versionInA = vectorA.getVersions().getOrDefault(userId, 0);
-
             if (versionInB > versionInA) {
                 return false;
             }
@@ -202,12 +220,10 @@ public class OtService {
     }
 
     /**
-     * Apply an operation to the document
+     * Apply an operation to a specific line
      */
-    private void applyOperation(TextOperation operation) {
-        StringBuilder sb = new StringBuilder(documentContent);
-
-        // Handle special newline normalization for consistent behavior
+    private void applyOperation(TextOperation operation, int lineNumber) {
+        StringBuilder sb = new StringBuilder(documentLines.get(lineNumber));
         String text = operation.getText();
         if (text != null) {
             text = text.replace("\r\n", "\n");
@@ -231,13 +247,15 @@ public class OtService {
                 }
                 break;
         }
-        documentContent = sb.toString();
+        documentLines.set(lineNumber, sb.toString());
     }
 
+    /**
+     * Transform an operation against another operation
+     */
     private TextOperation transformOperation(TextOperation clientOp, TextOperation serverOp) {
         TextOperation transformed = cloneOperation(clientOp);
 
-        // No need to transform if same user/op
         if (clientOp.getUserId().equals(serverOp.getUserId()) ||
                 (clientOp.getId() != null && clientOp.getId().equals(serverOp.getId()))) {
             return transformed;
@@ -247,82 +265,55 @@ public class OtService {
                 " against server op (" + serverOp.getUserId() + "): " + serverOp.getType() + " at " + serverOp.getPosition());
 
         int currentPos = transformed.getPosition();
-        Integer currentLen = transformed.getLength(); // Can be null for INSERT
+        Integer currentLen = transformed.getLength();
 
         switch (serverOp.getType()) {
             case INSERT:
-                // Only position changes when transforming against an INSERT
                 transformed.setPosition(transformPositionForInsert(
                         currentPos,
                         serverOp.getPosition(),
                         serverOp.getText().length(),
-                        transformed.getUserId(), // Client ID for tie-break
-                        serverOp.getUserId()   // Server ID for tie-break
+                        transformed.getUserId(),
+                        serverOp.getUserId()
                 ));
-                // Length of client op is unaffected by server INSERT
                 break;
 
             case DELETE:
-                // Position changes based on the deletion
                 transformed.setPosition(transformPositionForDelete(
                         currentPos,
                         serverOp.getPosition(),
                         serverOp.getLength()
                 ));
-                // Length *only* changes if the client op is DELETE or REPLACE
                 if (currentLen != null && (transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE)) {
-                    // Important: Calculate length change based on the *original* client position and length
-                    // before they were transformed by this specific serverOp's position effect.
-                    // This might require passing original clientPos/clientLen to transformLengthForDelete
-                    // OR adjusting the logic within transformLengthForDelete/here carefully.
-                    // Let's use the helper's logic assuming it works on the potentially adjusted position:
                     transformed.setLength(transformLengthForDelete(
-                            transformed.getPosition(), // Use the newly transformed position
-                            currentLen,              // Original length
+                            transformed.getPosition(),
+                            currentLen,
                             serverOp.getPosition(),
                             serverOp.getLength()
                     ));
-                    // Alternative, potentially safer if transformLength assumes original positions:
-               /*
-               transformed.setLength(transformLengthForDelete(
-                   clientOp.getPosition(), // *Original* client position
-                   currentLen,
-                   serverOp.getPosition(),
-                   serverOp.getLength()
-               ));
-               */
-                    // --> You need to verify exactly how transformLengthForDelete expects its inputs <--
                 }
                 break;
 
             case REPLACE:
-                // Decompose Replace = Delete + Insert (Standard approach)
-                // Create temporary Delete op from serverOp
                 TextOperation deletePart = new TextOperation();
                 deletePart.setType(OperationType.DELETE);
                 deletePart.setPosition(serverOp.getPosition());
                 deletePart.setLength(serverOp.getLength());
                 deletePart.setUserId(serverOp.getUserId());
-                deletePart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Keep context if needed
+                deletePart.setBaseVersionVector(serverOp.getBaseVersionVector());
 
-                // Create temporary Insert op from serverOp
                 TextOperation insertPart = new TextOperation();
                 insertPart.setType(OperationType.INSERT);
-                // Insert happens at the *original* position of the replace
                 insertPart.setPosition(serverOp.getPosition());
                 insertPart.setText(serverOp.getText());
                 insertPart.setUserId(serverOp.getUserId());
-                insertPart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Keep context if needed
+                insertPart.setBaseVersionVector(serverOp.getBaseVersionVector());
 
-
-                // Recursively transform: first against the delete part, then against the insert part.
                 logger.info("Decomposing server REPLACE. Transforming against DELETE part...");
                 TextOperation transformedAfterDelete = transformOperation(transformed, deletePart);
                 logger.info("Decomposing server REPLACE. Transforming against INSERT part...");
                 transformed = transformOperation(transformedAfterDelete, insertPart);
-                logger.info("Finished transforming against decomposed REPLACE.");
-                // Return here because the recursive calls handled the transformation
-                return transformed; // Important: Return after handling REPLACE decomposition
+                return transformed;
         }
 
         logger.info("Transformation result: " + transformed.getType() + " at " + transformed.getPosition() +
@@ -330,33 +321,16 @@ public class OtService {
         return transformed;
     }
 
-    /**
-     * Transform a position based on an insert operation
-     * @param position The position to transform
-     * @param insertPos The position of the insert
-     * @param insertLen The length of the inserted text
-     * @param clientId Client user ID for tie-breaking
-     * @param serverId Server user ID for tie-breaking
-     * @return The transformed position
-     */
     private int transformPositionForInsert(int position, int insertPos, int insertLen, String clientId, String serverId) {
         if (position < insertPos) {
             return position;
         } else if (position == insertPos) {
-            // Consistent tie-breaking using string comparison
             return clientId.compareTo(serverId) <= 0 ? position : position + insertLen;
         } else {
             return position + insertLen;
         }
     }
 
-    /**
-     * Transform a position based on a delete operation
-     * @param position The position to transform
-     * @param deletePos The position of the delete
-     * @param deleteLen The length of the deleted text
-     * @return The transformed position
-     */
     private int transformPositionForDelete(int position, int deletePos, int deleteLen) {
         if (position <= deletePos) {
             return position;
@@ -367,55 +341,32 @@ public class OtService {
         }
     }
 
-    /**
-     * Transform a length when operation overlaps with a delete operation
-     * @param pos The position of the operation
-     * @param len The length of the operation
-     * @param deletePos The position of the delete
-     * @param deleteLen The length of the delete
-     * @return The transformed length
-     */
     private int transformLengthForDelete(int pos, int len, int deletePos, int deleteLen) {
         int endPos = pos + len;
         int deleteEndPos = deletePos + deleteLen;
 
-        // No overlap
         if (endPos <= deletePos || pos >= deleteEndPos) {
-            return len;
+            return len; // No overlap, keep original length
         }
-
-        // Delete entirely contains operation
         if (pos >= deletePos && endPos <= deleteEndPos) {
-            return 0;
+            return 0; // Fully overlapped, no deletion left
         }
-
-        // Operation entirely contains delete
         if (pos <= deletePos && endPos >= deleteEndPos) {
-            return len - deleteLen;
+            return len - deleteLen; // Server delete is within client range
         }
-
-        // Delete overlaps with start of operation
         if (pos < deletePos && endPos > deletePos && endPos <= deleteEndPos) {
-            return deletePos - pos;
+            return deletePos - pos; // Partial overlap, delete up to server delete start
         }
-
-        // Delete overlaps with end of operation
         if (pos >= deletePos && pos < deleteEndPos && endPos > deleteEndPos) {
-            return endPos - deleteEndPos;
+            return endPos - deleteEndPos; // Partial overlap, delete after server delete end
         }
-
-        // Shouldn't get here
-        return 0;
+        return Math.max(1, len); // Default to at least 1 if transformation fails
     }
 
-    /**
-     * Create a clone of a TextOperation
-     * @param operation The operation to clone
-     * @return A deep copy of the operation
-     */
     private TextOperation cloneOperation(TextOperation operation) {
         TextOperation clone = new TextOperation();
         clone.setId(operation.getId());
+        clone.setLineNumber(operation.getLineNumber());
         clone.setType(operation.getType());
         clone.setPosition(operation.getPosition());
         clone.setText(operation.getText());
@@ -433,40 +384,39 @@ public class OtService {
         return clone;
     }
 
-    /**
-     * Validate an operation to ensure it can be applied to the document
-     * @param operation The operation to validate
-     */
-    private void validateOperation(TextOperation operation) {
-        // Get the current document length
-        int docLength = documentContent.length();
+    private void validateOperation(TextOperation operation, int lineNumber) {
+        String lineContent = documentLines.get(lineNumber);
+        int lineLength = lineContent.length();
 
-        // Ensure position is within bounds
         if (operation.getPosition() < 0) {
             operation.setPosition(0);
             logger.warning("Adjusted negative position to 0");
         }
-
-        if (operation.getPosition() > docLength) {
-            operation.setPosition(docLength);
-            logger.warning("Adjusted out-of-bounds position to document length: " + docLength);
+        if (operation.getPosition() > lineLength) {
+            operation.setPosition(lineLength);
+            logger.warning("Adjusted out-of-bounds position to line length: " + lineLength);
         }
 
-        // Validate length for DELETE and REPLACE operations
         if (operation.getType() == OperationType.DELETE || operation.getType() == OperationType.REPLACE) {
-            if (operation.getLength() == null || operation.getLength() < 0) {
+            if (operation.getLength() == null) {
+                operation.setLength(1); // Default to 1 instead of 0 if null
+                logger.warning("Set null length to 1");
+            } else if (operation.getLength() < 0) {
                 operation.setLength(0);
-                logger.warning("Adjusted invalid length to 0");
+                logger.warning("Adjusted negative length to 0");
             }
-
             int endPos = operation.getPosition() + operation.getLength();
-            if (endPos > docLength) {
-                operation.setLength(docLength - operation.getPosition());
-                logger.warning("Adjusted out-of-bounds length to: " + operation.getLength());
+            if (endPos > lineLength) {
+                int adjustedLength = lineLength - operation.getPosition();
+                if (adjustedLength > 0) { // Only adjust if there's something to delete
+                    operation.setLength(adjustedLength);
+                    logger.warning("Adjusted out-of-bounds length to: " + operation.getLength());
+                } else {
+                    operation.setLength(0); // No deletion if position is at end
+                }
             }
         }
 
-        // Validate text for INSERT and REPLACE operations
         if (operation.getType() == OperationType.INSERT || operation.getType() == OperationType.REPLACE) {
             if (operation.getText() == null) {
                 operation.setText("");
@@ -476,16 +426,20 @@ public class OtService {
     }
 
     /**
-     * Sets the document content directly (use with caution)
-     * @param content The new document content
+     * Sets the document content directly from a string (splits into lines)
      */
     public void setDocumentContent(String content) {
         lock.lock();
         try {
-            documentContent = content;
-            // Reset version vector when setting document content directly
-            serverVersionVector = new VersionVector(new HashMap<>());
-            operationHistory.clear();
+            String[] lines = content.split("\n");
+            documentLines.clear();
+            lineVersionVectors.clear();
+            lineOperationHistory.clear();
+            for (int i = 0; i < lines.length; i++) {
+                documentLines.add(lines[i]);
+                lineVersionVectors.put(i, new VersionVector(new HashMap<>()));
+                lineOperationHistory.put(i, new ArrayList<>());
+            }
             logger.info("Document content set directly. History cleared.");
         } finally {
             lock.unlock();
@@ -498,9 +452,12 @@ public class OtService {
     public void reset() {
         lock.lock();
         try {
-            documentContent = "";
-            serverVersionVector = new VersionVector(new HashMap<>());
-            operationHistory.clear();
+            documentLines.clear();
+            documentLines.add("");
+            lineVersionVectors.clear();
+            lineVersionVectors.put(0, new VersionVector(new HashMap<>()));
+            lineOperationHistory.clear();
+            lineOperationHistory.put(0, new ArrayList<>());
             logger.info("OT service has been reset");
         } finally {
             lock.unlock();
@@ -508,35 +465,33 @@ public class OtService {
     }
 
     /**
-     * Gets all operations in the history for debugging
-     * @return A list of all operations in history
+     * Gets all operations in the history for a specific line
      */
-    public List<TextOperation> getOperationHistory() {
+    public List<TextOperation> getOperationHistory(int lineNumber) {
         lock.lock();
         try {
-            // Return a copy to avoid external modifications
-            return new ArrayList<>(operationHistory);
+            int index = lineNumber - 1; // Convert to 0-based
+            return new ArrayList<>(lineOperationHistory.getOrDefault(index, new ArrayList<>()));
         } finally {
             lock.unlock();
         }
     }
 
     /**
-     * Get operations that happened after a given version vector
-     * @param clientVector The client's version vector
-     * @return A list of operations that the client hasn't seen
+     * Get operations that happened after a given version vector for a specific line
      */
-    public List<TextOperation> getOperationsSince(VersionVector clientVector) {
+    public List<TextOperation> getOperationsSince(int lineNumber, VersionVector clientVector) {
         lock.lock();
         try {
+            int index = lineNumber - 1;
             List<TextOperation> missingOps = new ArrayList<>();
 
             if (clientVector == null || clientVector.getVersions() == null) {
                 return missingOps;
             }
 
-            for (TextOperation op : operationHistory) {
-                // Check if client has seen this operation
+            List<TextOperation> history = lineOperationHistory.getOrDefault(index, new ArrayList<>());
+            for (TextOperation op : history) {
                 String opUserId = op.getUserId();
                 int opVersion = op.getBaseVersionVector().getVersions().getOrDefault(opUserId, 0);
                 int clientVersion = clientVector.getVersions().getOrDefault(opUserId, 0);
@@ -553,53 +508,50 @@ public class OtService {
     }
 
     /**
-     * Calculate the document state at a specific version vector
-     * @param targetVector The version vector to calculate document state for
-     * @return The document content at the specified version
+     * Calculate the document state at a specific version vector for all lines
      */
-    public String getDocumentAtVersion(VersionVector targetVector) {
+    public List<String> getDocumentAtVersion(Map<Integer, VersionVector> targetVectors) {
         lock.lock();
         try {
-            if (targetVector == null || targetVector.getVersions() == null) {
-                return "";
+            List<String> tempDoc = new ArrayList<>();
+            for (int i = 0; i < documentLines.size(); i++) {
+                tempDoc.add("");
             }
 
-            // Start with empty document
-            StringBuilder tempDoc = new StringBuilder();
-
-            // Find operations that are known by the target version
-            List<TextOperation> relevantOps = new ArrayList<>();
-            for (TextOperation op : operationHistory) {
-                if (isKnownByVector(op, targetVector)) {
-                    relevantOps.add(op);
+            for (int lineIndex = 0; lineIndex < documentLines.size(); lineIndex++) {
+                VersionVector targetVector = targetVectors.get(lineIndex);
+                if (targetVector == null || targetVector.getVersions() == null) {
+                    continue;
                 }
+
+                List<TextOperation> relevantOps = new ArrayList<>();
+                List<TextOperation> history = lineOperationHistory.getOrDefault(lineIndex, new ArrayList<>());
+                for (TextOperation op : history) {
+                    if (isKnownByVector(op, targetVector)) {
+                        relevantOps.add(op);
+                    }
+                }
+
+                StringBuilder lineContent = new StringBuilder();
+                for (TextOperation op : relevantOps) {
+                    applyOperationTo(lineContent, op);
+                }
+                tempDoc.set(lineIndex, lineContent.toString());
             }
 
-            // Apply operations in order
-            for (TextOperation op : relevantOps) {
-                applyOperationTo(tempDoc, op);
-            }
-
-            return tempDoc.toString();
+            return tempDoc;
         } finally {
             lock.unlock();
         }
     }
 
-    /**
-     * Check if an operation is known by a version vector
-     */
     private boolean isKnownByVector(TextOperation op, VersionVector vector) {
         String opUserId = op.getUserId();
         int opVersion = op.getBaseVersionVector().getVersions().getOrDefault(opUserId, 0) + 1;
         int vectorVersion = vector.getVersions().getOrDefault(opUserId, 0);
-
         return vectorVersion >= opVersion;
     }
 
-    /**
-     * Apply an operation to a StringBuilder
-     */
     private void applyOperationTo(StringBuilder doc, TextOperation operation) {
         String text = operation.getText();
         if (text != null) {
