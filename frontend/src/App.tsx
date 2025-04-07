@@ -692,7 +692,7 @@ const App = () => {
         editorRef.current,
         operationManagerRef.current,
         "Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello Hello ",
-        100 // Adjust typing speed as needed
+        75 // Adjust typing speed as needed
       );
     }
   };

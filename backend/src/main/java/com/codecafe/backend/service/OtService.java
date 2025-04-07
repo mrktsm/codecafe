@@ -119,28 +119,50 @@ public class OtService {
     }
 
     /**
-     * Find operations that are concurrent with the given operation
+     * Find operations in history that the incoming operation hasn't causally seen yet.
+     * These are the operations the incoming operation needs to be transformed against.
+     * This follows the standard TP2 server-side algorithm principle.
+     *
+     * @param incomingOp The operation received from a client.
+     * @return A list of operations from history to transform incomingOp against.
      */
-    private List<TextOperation> findConcurrentOperations(TextOperation operation) {
-        List<TextOperation> concurrent = new ArrayList<>();
-        VersionVector clientVector = operation.getBaseVersionVector();
+    private List<TextOperation> findConcurrentOperations(TextOperation incomingOp) {
+        List<TextOperation> operationsToTransformAgainst = new ArrayList<>();
+        VersionVector clientBaseVector = incomingOp.getBaseVersionVector();
 
-        if (clientVector == null || clientVector.getVersions() == null) {
-            return new ArrayList<>();
+        // If client vector is missing or empty, it hasn't seen anything the server has,
+        // so it needs to be transformed against all of the server's history.
+        if (clientBaseVector == null || clientBaseVector.getVersions() == null) {
+            logger.warning("Incoming op " + incomingOp.getId() + " had null or empty base vector. Transforming against all history.");
+            // Return a copy to avoid potential concurrent modification if list grows? Lock should prevent this.
+            return new ArrayList<>(this.operationHistory);
         }
 
-        for (TextOperation historyOp : operationHistory) {
-            // Skip our own operations
-            if (historyOp.getUserId().equals(operation.getUserId())) {
-                continue;
-            }
+        for (TextOperation historyOp : this.operationHistory) {
+            // Get the version of the historyOp's author AS KNOWN BY THE INCOMING CLIENT OP
+            int historyOpAuthorVersionKnownByClient = clientBaseVector.getVersions().getOrDefault(historyOp.getUserId(), 0);
 
-            // Check if operations are concurrent
-            if (isConcurrent(operation, historyOp)) {
-                concurrent.add(historyOp);
+            // Get the actual server sequence number assigned to the historyOp *for its author*.
+            // This version number is stored in the historyOp's *own* baseVersionVector,
+            // because that vector represents the server state *after* applying historyOp.
+            int historyOpServerSequenceVersion = historyOp.getBaseVersionVector().getVersions().getOrDefault(historyOp.getUserId(), 0);
+
+            // If the server's sequence number for the operation in history is greater than
+            // the version the client knew about for that author when creating the incomingOp,
+            // then the client hadn't seen historyOp, and incomingOp must be transformed against it.
+            if (historyOpServerSequenceVersion > historyOpAuthorVersionKnownByClient) {
+                operationsToTransformAgainst.add(historyOp);
             }
         }
-        return concurrent;
+        // Logging added for clarity during testing
+        if (!operationsToTransformAgainst.isEmpty()) {
+            logger.info("Op " + incomingOp.getId() + " (User " + incomingOp.getUserId() + ", BaseVV: " + clientBaseVector + ") needs transformation against " + operationsToTransformAgainst.size() + " history operations.");
+            // Optional: Log the IDs of ops being transformed against
+            // operationsToTransformAgainst.forEach(op -> logger.fine(" - History Op ID: " + op.getId() + ", User: " + op.getUserId() + ", Server Seq Version: " + op.getBaseVersionVector().getVersions().getOrDefault(op.getUserId(), 0)));
+        } else {
+            logger.info("Op " + incomingOp.getId() + " (User " + incomingOp.getUserId() + ", BaseVV: " + clientBaseVector + ") requires no transformation against history.");
+        }
+        return operationsToTransformAgainst;
     }
 
     /**
@@ -226,53 +248,68 @@ public class OtService {
     }
 
     /**
-     * Transform operation A against operation B
+     * Transforms operation 'clientOp' against 'serverOp' according to OT rules.
+     * This ensures that applying serverOp then transformed clientOp yields the
+     * same result as applying clientOp then transformed serverOp.
+     * (Note: This function computes T(clientOp, serverOp)).
+     *
+     * @param clientOp The operation to transform (usually from the client or an earlier state).
+     * @param serverOp The operation to transform against (usually from server history or a concurrent op).
+     * @return The transformed clientOp.
      */
     private TextOperation transformOperation(TextOperation clientOp, TextOperation serverOp) {
+        // Clone the operation to avoid modifying the original passed-in object
         TextOperation transformed = cloneOperation(clientOp);
 
-        // No need to transform if they're from the same user or it's the same operation
-        if (clientOp.getUserId().equals(serverOp.getUserId()) ||
-                (clientOp.getId() != null && clientOp.getId().equals(serverOp.getId()))) {
+        // Skip transformation only if it's the exact same operation ID.
+        // DO NOT skip just because users are the same, as clientOp might need
+        // transformation against a previous operation from the same user in serverOp history.
+        if (clientOp.getId() != null && clientOp.getId().equals(serverOp.getId())) {
             return transformed;
         }
 
         switch (serverOp.getType()) {
             case INSERT:
+                // Transform position based on the insert.
                 transformed.setPosition(transformPositionForInsert(
-                        transformed.getPosition(),
+                        transformed.getPosition(), // Use current position of the op being transformed
                         serverOp.getPosition(),
-                        serverOp.getText().length(),
-                        clientOp.getUserId(),
+                        serverOp.getText() != null ? serverOp.getText().length() : 0,
+                        clientOp.getUserId(), // Use original clientOp's User ID for tie-breaking consistency
                         serverOp.getUserId()
                 ));
 
-                // Adjust length for delete/replace operations if server inserted within their range
-                if ((transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE) &&
-                        transformed.getLength() != null) {
-                    int endPos = transformed.getPosition() + transformed.getLength();
-                    if (serverOp.getPosition() >= transformed.getPosition() && serverOp.getPosition() <= endPos) {
-                        transformed.setLength(transformed.getLength() + serverOp.getText().length());
-                    }
-                }
+                // ** CORRECTED LOGIC **
+                // We NO LONGER adjust the *length* of 'transformed' if it is DELETE or REPLACE.
+                // A concurrent insert ('serverOp') shifts the position but does not
+                // change the number of characters 'transformed' was originally intended to delete/replace.
                 break;
 
             case DELETE:
-                int serverDeleteEnd = serverOp.getPosition() + serverOp.getLength();
+                // Ignore if serverOp is a delete of length 0 or invalid
+                if (serverOp.getLength() == null || serverOp.getLength() <= 0) {
+                    break;
+                }
 
-                // Adjust position based on delete operation
+                // Capture the state of 'transformed' *before* applying effects of serverOp's DELETE.
+                // This is crucial for correctly calculating the length change.
+                int posBeforeDeleteTransform = transformed.getPosition();
+                int lenBeforeDeleteTransform = transformed.getLength() != null ? transformed.getLength() : 0;
+
+                // 1. Transform position first.
                 transformed.setPosition(transformPositionForDelete(
-                        transformed.getPosition(),
+                        posBeforeDeleteTransform, // Use position before this transform step
                         serverOp.getPosition(),
                         serverOp.getLength()
                 ));
 
-                // Adjust length for delete/replace operations
+                // 2. Transform length if 'transformed' is DELETE or REPLACE.
+                //    Use the state captured *before* this step's position/length transforms.
                 if ((transformed.getType() == OperationType.DELETE || transformed.getType() == OperationType.REPLACE) &&
-                        transformed.getLength() != null) {
+                        lenBeforeDeleteTransform > 0) {
                     transformed.setLength(transformLengthForDelete(
-                            transformed.getPosition(),
-                            transformed.getLength(),
+                            posBeforeDeleteTransform,    // Position *before* this delete transform step
+                            lenBeforeDeleteTransform,    // Length *before* this delete transform step
                             serverOp.getPosition(),
                             serverOp.getLength()
                     ));
@@ -280,24 +317,36 @@ public class OtService {
                 break;
 
             case REPLACE:
-                // Handle replace as a delete followed by an insert
-                TextOperation deleteOp = new TextOperation();
-                deleteOp.setType(OperationType.DELETE);
-                deleteOp.setPosition(serverOp.getPosition());
-                deleteOp.setLength(serverOp.getLength());
-                deleteOp.setBaseVersionVector(serverOp.getBaseVersionVector());
-                deleteOp.setUserId(serverOp.getUserId());
+                // Ignore invalid or no-op replaces
+                if (serverOp.getLength() == null || serverOp.getLength() < 0 || serverOp.getText() == null) {
+                    break;
+                }
 
-                TextOperation insertOp = new TextOperation();
-                insertOp.setType(OperationType.INSERT);
-                insertOp.setPosition(serverOp.getPosition());
-                insertOp.setText(serverOp.getText());
-                insertOp.setBaseVersionVector(serverOp.getBaseVersionVector());
-                insertOp.setUserId(serverOp.getUserId());
+                // Decompose serverOp (Replace) into its Delete and Insert parts
+                // and transform 'transformed' against each part sequentially.
 
-                // Transform against delete, then against insert
-                TextOperation afterDelete = transformOperation(transformed, deleteOp);
-                transformed = transformOperation(afterDelete, insertOp);
+                // 1. Create the Delete part of serverOp
+                TextOperation deletePart = new TextOperation();
+                deletePart.setType(OperationType.DELETE);
+                deletePart.setPosition(serverOp.getPosition());
+                deletePart.setLength(serverOp.getLength());
+                deletePart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Preserve context if needed
+                deletePart.setUserId(serverOp.getUserId());
+                // deletePart.setId(...) // Usually not needed for intermediate parts
+
+                // 2. Create the Insert part of serverOp
+                TextOperation insertPart = new TextOperation();
+                insertPart.setType(OperationType.INSERT);
+                insertPart.setPosition(serverOp.getPosition()); // Insert happens at the start pos of deleted range
+                insertPart.setText(serverOp.getText());
+                insertPart.setBaseVersionVector(serverOp.getBaseVersionVector()); // Preserve context if needed
+                insertPart.setUserId(serverOp.getUserId());
+                // insertPart.setId(...)
+
+                // 3. Transform 'transformed' first against the Delete part...
+                TextOperation transformedAfterDelete = transformOperation(transformed, deletePart);
+                // 4. ...then transform the result against the Insert part.
+                transformed = transformOperation(transformedAfterDelete, insertPart);
                 break;
         }
 
@@ -305,103 +354,114 @@ public class OtService {
     }
 
     /**
-     * Transform a position based on an insert operation
-     * @param position The position to transform
-     * @param insertPos The position of the insert
-     * @param insertLen The length of the inserted text
-     * @param clientId Client user ID for tie-breaking
-     * @param serverId Server user ID for tie-breaking
-     * @return The transformed position
+     * Transforms a position based on a concurrent INSERT operation, handling tie-breaking.
+     *
+     * @param position  The position of the operation being transformed.
+     * @param insertPos The position of the concurrent insert.
+     * @param insertLen The length of the concurrent insert.
+     * @param clientId  The User ID of the operation being transformed (for tie-breaking).
+     * @param serverId  The User ID of the concurrent insert operation (for tie-breaking).
+     * @return The transformed position.
      */
     private int transformPositionForInsert(int position, int insertPos, int insertLen, String clientId, String serverId) {
         if (position < insertPos) {
+            // Operation is before the insert, position unaffected.
             return position;
         } else if (position == insertPos) {
-            // Consistent tie-breaking using string comparison
-            return clientId.compareTo(serverId) <= 0 ? position : position + insertLen;
-        } else {
+            // Concurrent operations at the exact same position. Apply tie-breaking.
+            // GOAL: Match frontend logic exactly for convergence.
+            // Frontend: comparison < 0 -> position; comparison >= 0 -> position + insertLen
+            // Java: compareTo returns <0 if less, 0 if equal, >0 if greater.
+            int comparison = clientId.compareTo(serverId);
+            // If clientId comes first alphabetically (<0), its operation is considered "first",
+            // so its position remains unchanged relative to the insert point.
+            // Otherwise (>=0), its operation is considered "after" the insert, shifting right.
+            return comparison < 0 ? position : position + insertLen;
+        } else { // position > insertPos
+            // Operation is after the insert, shift position right.
             return position + insertLen;
         }
     }
 
     /**
-     * Transform a position based on a delete operation
-     * @param position The position to transform
-     * @param deletePos The position of the delete
-     * @param deleteLen The length of the deleted text
-     * @return The transformed position
+     * Transforms a position based on a concurrent DELETE operation.
+     *
+     * @param position  The position of the operation being transformed.
+     * @param deletePos The starting position of the concurrent delete.
+     * @param deleteLen The length of the concurrent delete.
+     * @return The transformed position.
      */
     private int transformPositionForDelete(int position, int deletePos, int deleteLen) {
+        if (deleteLen <= 0) return position; // Delete of zero length has no effect
+
         if (position <= deletePos) {
+            // Starts before or at the delete range, position unaffected.
             return position;
         } else if (position >= deletePos + deleteLen) {
+            // Starts after the delete range, shift position left.
             return position - deleteLen;
         } else {
+            // Starts within the delete range, move position to the start of the delete.
             return deletePos;
         }
     }
 
     /**
-     * Transform a length when operation overlaps with a delete operation
-     * @param pos The position of the operation
-     * @param len The length of the operation
-     * @param deletePos The position of the delete
-     * @param deleteLen The length of the delete
-     * @return The transformed length
+     * Transforms the length of a DELETE or REPLACE operation ('a') based on a
+     * concurrent DELETE operation ('b'). Calculates the remaining length of 'a'
+     * after 'b' removes characters, using overlap calculation.
+     *
+     * @param aPos      The starting position of operation 'a' (the one being transformed).
+     * @param aLen      The length of operation 'a'.
+     * @param deletePos The starting position of the concurrent delete ('b').
+     * @param deleteLen The length of the concurrent delete ('b').
+     * @return The transformed length of operation 'a'.
      */
-    private int transformLengthForDelete(int pos, int len, int deletePos, int deleteLen) {
-        int endPos = pos + len;
+    private int transformLengthForDelete(int aPos, int aLen, int deletePos, int deleteLen) {
+        // Use the simpler overlap calculation method (matches corrected frontend)
+        if (aLen <= 0 || deleteLen <= 0) {
+            // If the operation being transformed already has no length,
+            // or the concurrent delete removes nothing, the length remains unchanged.
+            return Math.max(0, aLen); // Ensure non-negative result
+        }
+
+        int aEndPos = aPos + aLen;
         int deleteEndPos = deletePos + deleteLen;
 
-        // No overlap
-        if (endPos <= deletePos || pos >= deleteEndPos) {
-            return len;
-        }
+        // Calculate the start and end of the overlapping region
+        int effectiveStart = Math.max(aPos, deletePos);
+        int effectiveEnd = Math.min(aEndPos, deleteEndPos);
 
-        // Delete entirely contains operation
-        if (pos >= deletePos && endPos <= deleteEndPos) {
-            return 0;
-        }
+        // Calculate the length of the overlap (cannot be negative)
+        int overlapLength = Math.max(0, effectiveEnd - effectiveStart);
 
-        // Operation entirely contains delete
-        if (pos <= deletePos && endPos >= deleteEndPos) {
-            return len - deleteLen;
-        }
-
-        // Delete overlaps with start of operation
-        if (pos < deletePos && endPos > deletePos && endPos <= deleteEndPos) {
-            return deletePos - pos;
-        }
-
-        // Delete overlaps with end of operation
-        if (pos >= deletePos && pos < deleteEndPos && endPos > deleteEndPos) {
-            return endPos - deleteEndPos;
-        }
-
-        // Shouldn't get here
-        return 0;
+        // The new length is the original length minus the overlap. Ensure non-negative.
+        return Math.max(0, aLen - overlapLength);
     }
 
     /**
-     * Create a clone of a TextOperation
+     * Create a deep clone of a TextOperation, ensuring the version vector map is copied.
      * @param operation The operation to clone
      * @return A deep copy of the operation
      */
     private TextOperation cloneOperation(TextOperation operation) {
+        if (operation == null) return null;
+
         TextOperation clone = new TextOperation();
         clone.setId(operation.getId());
         clone.setType(operation.getType());
         clone.setPosition(operation.getPosition());
-        clone.setText(operation.getText());
-        clone.setLength(operation.getLength());
-        clone.setUserId(operation.getUserId());
+        clone.setText(operation.getText()); // Strings are immutable, shallow copy is fine
+        clone.setLength(operation.getLength()); // Integers are primitive/immutable wrapper
+        clone.setUserId(operation.getUserId()); // String
 
+        // Deep copy the version vector
         if (operation.getBaseVersionVector() != null) {
-            Map<String, Integer> versionCopy = new HashMap<>();
-            if (operation.getBaseVersionVector().getVersions() != null) {
-                versionCopy.putAll(operation.getBaseVersionVector().getVersions());
-            }
+            Map<String, Integer> versionMap = operation.getBaseVersionVector().getVersions();
+            Map<String, Integer> versionCopy = (versionMap == null) ? new HashMap<>() : new HashMap<>(versionMap);
             clone.setBaseVersionVector(new VersionVector(versionCopy));
+        } else {
+            clone.setBaseVersionVector(new VersionVector(new HashMap<>())); // Ensure non-null vector
         }
 
         return clone;
