@@ -269,7 +269,8 @@ const TerminalComponent = forwardRef((_, ref) => {
     >
       <Card className="bg-neutral-900/70 backdrop-blur-md rounded-tl-lg border border-neutral-800/50 shadow-xl overflow-auto overscroll-none">
         <div
-          className="p-4 font-mono text-green-400/80"
+          className="p
+          -4 font-mono text-green-400/80"
           style={{ height, width }}
         >
           <div
