@@ -13,12 +13,7 @@ export function SortableTab({
   onSwitchTab,
   onCloseTab,
 }: SortableTabProps) {
-  const {
-    listeners,
-    setNodeRef,
-    transition: _transition,
-    isDragging,
-  } = useSortable({ id: file.id });
+  const { listeners, setNodeRef, isDragging } = useSortable({ id: file.id });
 
   const storeSwitchTab = useFileStore((state) => state.switchTab);
   const storeCloseFile = useFileStore((state) => state.closeFile);

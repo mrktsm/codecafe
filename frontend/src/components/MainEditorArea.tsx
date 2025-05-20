@@ -1,6 +1,7 @@
 import React from "react";
 import { editor } from "monaco-editor";
 import { VscFile } from "react-icons/vsc";
+import { TerminalRef } from "./TerminalComponent";
 
 import { JoinStateType, EditorLanguageKey } from "../types/editor";
 import { RemoteUser } from "../types/props";
@@ -24,7 +25,7 @@ interface MainEditorAreaProps {
   // Refs
   editorTerminalAreaRef: React.RefObject<HTMLDivElement>;
   tabContainerRef: React.RefObject<HTMLDivElement>;
-  terminalRef: any;
+  terminalRef: React.RefObject<TerminalRef>;
   editorInstanceRef: React.MutableRefObject<editor.IStandaloneCodeEditor | null>;
 
   // Editor
@@ -86,7 +87,8 @@ const MainEditorArea = ({
   // Find the active file object
   const activeFile = openFiles.find((f) => f.id === activeFileId);
 
-  let ActiveIconComponent: React.ComponentType<any> = VscFile; // Default icon
+  let ActiveIconComponent: React.ComponentType<React.SVGProps<SVGSVGElement>> =
+    VscFile; // Default icon
   let activeIconColor = defaultIconColor; // Default color
 
   if (activeFile) {

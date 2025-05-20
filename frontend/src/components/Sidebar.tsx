@@ -16,6 +16,12 @@ import { JoinStateType, SearchOptions, MatchInfo } from "../types/editor";
 import { ICON_BAR_WIDTH, EXPLORER_HANDLE_WIDTH } from "../constants/layout";
 import { COLORS } from "../constants/colors";
 
+interface MockFile {
+  name: string;
+  language: string;
+  // Add other properties as needed
+}
+
 interface SidebarProps {
   sidebarContainerRef: React.RefObject<HTMLDivElement>;
   explorerPanelRef: React.RefObject<HTMLDivElement>;
@@ -38,7 +44,7 @@ interface SidebarProps {
   isSessionActive: boolean;
   activeFileId: string | null;
   handleOpenFile: (fileId: string) => void;
-  mockFiles: { [key: string]: any };
+  mockFiles: { [key: string]: MockFile };
   onSearchChange: (term: string, options: SearchOptions) => void;
   onReplaceChange: (value: string) => void;
   onToggleSearchOption: (optionKey: keyof SearchOptions) => void;

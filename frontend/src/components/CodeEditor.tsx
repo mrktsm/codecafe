@@ -22,8 +22,8 @@ const CodeEditor = ({
   isSessionActive = false,
 }: CodeEditorProps) => {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const decorationsRef = useRef<string[]>([]);
   const styleSheetRef = useRef<HTMLStyleElement | null>(null);
+  const decorationsRef = useRef<string[]>([]);
 
   useEffect(() => {
     // console.log("[CodeEditor] Received users prop:", users);
@@ -39,84 +39,6 @@ const CodeEditor = ({
       monaco.editor.setTheme(theme || "");
     });
   }, [theme]);
-
-  // Update styles for user cursors
-  useEffect(() => {
-    if (styleSheetRef.current) {
-      styleSheetRef.current.remove();
-    }
-
-    const styleSheet = document.createElement("style");
-    styleSheet.textContent = `
-      .monaco-editor {
-        border: none !important;
-      }
-
-      /* Remove shadows from common widgets */
-      .monaco-editor .find-widget,
-      .monaco-editor .suggest-widget,
-      .monaco-editor .monaco-hover,
-      .monaco-editor .parameter-hints-widget {
-          box-shadow: none !important;
-          border: 1px solid #404040 !important; /* Optional: Add a subtle border instead */
-      }
-
-      /* Remove shadow from sticky scroll header */
-      .monaco-editor .header-wrapper {
-          box-shadow: none !important;
-      }
-
-      ${users
-        // Filter out the local user before generating styles
-        .filter((user) => user.id !== localUserId)
-        .map(
-          (user) => `
-        @keyframes blink-${user.id} {
-          0%, 49% { opacity: 1; }
-          50%, 99% { opacity: 0; }
-          100% { opacity: 1; }
-        }
-
-        .user-${user.id}-selection {
-          background-color: ${user.color}33 !important;
-          border: 1px solid ${user.color}66 !important;
-        }
-        .user-${user.id}-cursor {
-          border-left: 2px solid ${user.color} !important;
-          height: 20px !important;
-          margin-left: -1px !important;
-          animation: blink-${user.id} 1000ms step-end infinite;
-        }
-        .user-${user.id}-label {
-          background-color: ${user.color} !important;
-          color: white !important;
-          padding: 2px 6px !important;
-          border-radius: 3px !important;
-          font-size: 12px !important;
-          font-family: system-ui !important;
-          position: absolute !important;
-          top: -20px !important;
-          white-space: nowrap !important;
-          z-index: 1 !important;
-        }
-      `
-        )
-        .join("\n")}
-    `;
-    document.head.appendChild(styleSheet);
-    styleSheetRef.current = styleSheet;
-
-    if (editorRef.current) {
-      updateDecorations(); // <-- Make sure this is called
-    }
-
-    return () => {
-      if (styleSheetRef.current) {
-        styleSheetRef.current.remove();
-        styleSheetRef.current = null;
-      }
-    };
-  }, [users, localUserId]);
 
   // Function to apply decorations based on the users prop
   const updateDecorations = () => {
@@ -193,6 +115,84 @@ const CodeEditor = ({
     }
   };
 
+  useEffect(() => {
+    // Create and inject a style sheet for user decorations
+    if (styleSheetRef.current) {
+      styleSheetRef.current.remove();
+    }
+
+    const styleSheet = document.createElement("style");
+    styleSheet.textContent = `
+      .monaco-editor {
+        border: none !important;
+      }
+
+      /* Remove shadows from common widgets */
+      .monaco-editor .find-widget,
+      .monaco-editor .suggest-widget,
+      .monaco-editor .monaco-hover,
+      .monaco-editor .parameter-hints-widget {
+          box-shadow: none !important;
+          border: 1px solid #404040 !important; /* Optional: Add a subtle border instead */
+      }
+
+      /* Remove shadow from sticky scroll header */
+      .monaco-editor .header-wrapper {
+          box-shadow: none !important;
+      }
+
+      ${users
+        // Filter out the local user before generating styles
+        .filter((user) => user.id !== localUserId)
+        .map(
+          (user) => `
+        @keyframes blink-${user.id} {
+          0%, 49% { opacity: 1; }
+          50%, 99% { opacity: 0; }
+          100% { opacity: 1; }
+        }
+
+        .user-${user.id}-selection {
+          background-color: ${user.color}33 !important;
+          border: 1px solid ${user.color}66 !important;
+        }
+        .user-${user.id}-cursor {
+          border-left: 2px solid ${user.color} !important;
+          height: 20px !important;
+          margin-left: -1px !important;
+          animation: blink-${user.id} 1000ms step-end infinite;
+        }
+        .user-${user.id}-label {
+          background-color: ${user.color} !important;
+          color: white !important;
+          padding: 2px 6px !important;
+          border-radius: 3px !important;
+          font-size: 12px !important;
+          font-family: system-ui !important;
+          position: absolute !important;
+          top: -20px !important;
+          white-space: nowrap !important;
+          z-index: 1 !important;
+        }
+      `
+        )
+        .join("\n")}
+    `;
+    document.head.appendChild(styleSheet);
+    styleSheetRef.current = styleSheet;
+
+    if (editorRef.current) {
+      updateDecorations(); // <-- Make sure this is called
+    }
+
+    return () => {
+      if (styleSheetRef.current) {
+        styleSheetRef.current.remove();
+        styleSheetRef.current = null;
+      }
+    };
+  }, [users, localUserId, updateDecorations]);
+
   // Editor Mount Handler
   const handleEditorDidMount: OnMount = (editor) => {
     editorRef.current = editor;
@@ -201,8 +201,8 @@ const CodeEditor = ({
     // Cursor/Selection Changes
     let cursorListener: IDisposable | null = null;
     let selectionListener: IDisposable | null = null;
-    cursorListener = editor.onDidChangeCursorPosition((_) => {});
-    selectionListener = editor.onDidChangeCursorSelection((_) => {});
+    cursorListener = editor.onDidChangeCursorPosition(() => {});
+    selectionListener = editor.onDidChangeCursorSelection(() => {});
 
     updateDecorations();
 

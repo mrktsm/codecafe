@@ -110,7 +110,9 @@ export const useCollaborationSession = ({
     subscriptionsRef.current.forEach((sub) => {
       try {
         sub.unsubscribe();
-      } catch (e) {}
+      } catch {
+        // Ignore unsubscription errors
+      }
     });
     subscriptionsRef.current = [];
 
@@ -152,7 +154,7 @@ export const useCollaborationSession = ({
 
     stompClient.connect(
       {},
-      (_frame: any) => {
+      () => {
         handleConnectionStatusChange(true);
 
         const joinPayload = {
@@ -220,6 +222,7 @@ export const useCollaborationSession = ({
                 JSON.stringify(payload)
               );
             } else {
+              // Connection not available, silently fail
             }
           },
           // Re-enable sendSelection for explicit selection changes

@@ -82,7 +82,6 @@ const App = () => {
   const findResultsDecorationIds = useRef<string[]>([]);
   const [isWidgetForcedHidden, setIsWidgetForcedHidden] = useState(false);
 
-  // New state for chat messages
   const [chatMessages, setChatMessages] = useState<ChatMessageType[]>([]);
 
   // User Identity
@@ -337,7 +336,7 @@ const App = () => {
       },
       [userId]
     ),
-    onConnectionStatusChange: useCallback((_connected: boolean) => {}, []),
+    onConnectionStatusChange: useCallback(() => {}, []),
     onError: useCallback(
       (error: Error | string) => {
         console.error("[App onError] Collaboration Hook Error:", error);
@@ -417,10 +416,7 @@ const App = () => {
     }
   };
 
-  const handleGlobalPointerUp = useCallback(
-    (_: PointerEvent) => {},
-    [isWebViewPanelResizing, isTerminalPanelResizing, isExplorerPanelResizing]
-  );
+  const handleGlobalPointerUp = useCallback(() => {}, []);
 
   const handleCodeChange = (newCode: string) => {
     if (!isSessionActive && activeFileId) {
@@ -467,7 +463,7 @@ const App = () => {
   const getFindController = useCallback(() => {
     return editorInstanceRef.current?.getContribution(
       "editor.contrib.findController"
-    ) as any;
+    );
   }, []);
 
   // Function to update match info from editor state
