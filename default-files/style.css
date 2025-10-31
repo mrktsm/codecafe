@@ -1,0 +1,48 @@
+body {
+  font-family: sans-serif;
+  background-color: #f0f0f0;
+  color: #333;
+  padding: 20px;
+  transition: background-color 0.3s ease;
+}
+
+h1 {
+  color: #5a67d8;
+  text-align: center;
+}
+
+p {
+  line-height: 1.6;
+}
+
+button {
+  padding: 10px 15px;
+  font-size: 1rem;
+  background-color: #5a67d8;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+button:hover {
+  background-color: #434190;
+}
+
+body.dark-mode {
+  background-color: #2d3748;
+  color: #e2e8f0;
+}
+
+body.dark-mode h1 {
+  color: #9f7aea;
+}
+
+body.dark-mode button {
+  background-color: #9f7aea;
+}
+
+body.dark-mode button:hover {
+  background-color: #805ad5;
+}

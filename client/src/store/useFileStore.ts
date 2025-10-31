@@ -4,35 +4,60 @@ import {
   EditorLanguageKey,
   SearchOptions,
   MatchInfo,
+  CatalogFile,
 } from "../types/editor";
-import { MOCK_FILES } from "../constants/mockFiles";
 
-const initialOpenFileIds = ["index.html", "style.css", "script.js"];
+const DEFAULT_INITIAL_OPEN_FILE_IDS = [
+  "index.html",
+  "style.css",
+  "script.js",
+];
 
-const initialOpenFilesData = initialOpenFileIds.map((id): OpenFile => {
-  const fileData = MOCK_FILES[id];
-  if (!fileData) {
-    console.error(`Initial file ${id} not found in MOCK_FILES!`);
-    return { id, name: "Error", language: "plaintext" as EditorLanguageKey };
-  }
+const buildOpenFileState = (
+  catalog: Record<string, CatalogFile>,
+  preferredOpenIds: string[] = DEFAULT_INITIAL_OPEN_FILE_IDS
+) => {
+  const sanitizedPreferredIds = preferredOpenIds.filter(
+    (id) => catalog[id] !== undefined
+  );
+
+  const fallbackPool =
+    sanitizedPreferredIds.length > 0
+      ? sanitizedPreferredIds
+      : Object.keys(catalog);
+
+  const openIds = fallbackPool.slice(0, Math.min(fallbackPool.length, 3));
+
+  const openFiles: OpenFile[] = openIds.map((id) => {
+    const fileData = catalog[id];
+    if (!fileData) {
+      return {
+        id,
+        name: id,
+        language: "plaintext" as EditorLanguageKey,
+      };
+    }
+    return {
+      id,
+      name: fileData.name,
+      language: fileData.language,
+    };
+  });
+
+  const fileContents: { [id: string]: string } = {};
+  openIds.forEach((id) => {
+    const fileData = catalog[id];
+    if (fileData) {
+      fileContents[id] = fileData.content;
+    }
+  });
+
   return {
-    id: id,
-    name: fileData.name,
-    language: fileData.language as EditorLanguageKey,
+    openFiles,
+    fileContents,
+    activeFileId: openFiles[0]?.id ?? null,
   };
-});
-
-const initialFileContents: { [id: string]: string } = {};
-initialOpenFileIds.forEach((id) => {
-  const fileData = MOCK_FILES[id];
-  if (fileData) {
-    initialFileContents[id] = fileData.content;
-  } else {
-    initialFileContents[id] = `// Error: Content for ${id} not found`;
-  }
-});
-
-const initialActiveFileId = initialOpenFileIds[0] || null;
+};
 
 const initialSearchOptions: SearchOptions = {
   matchCase: false,
@@ -41,7 +66,10 @@ const initialSearchOptions: SearchOptions = {
   preserveCase: false,
 };
 
+const initialDerivedState = buildOpenFileState({});
+
 interface FileState {
+  filesCatalog: { [id: string]: CatalogFile };
   openFiles: OpenFile[];
   activeFileId: string | null;
   fileContents: { [id: string]: string };
@@ -67,6 +95,10 @@ interface FileActions {
   openFile: (fileId: string, isSessionActive: boolean) => void;
   closeFile: (fileIdToClose: string) => void;
   switchTab: (fileId: string) => void;
+  initializeFromCatalog: (
+    catalog: { [id: string]: CatalogFile },
+    preferredOpenIds?: string[]
+  ) => void;
 
   // Search Actions
   setSearchTerm: (term: string) => void;
@@ -77,9 +109,10 @@ interface FileActions {
 }
 
 export const useFileStore = create<FileState & FileActions>((set, get) => ({
-  openFiles: initialOpenFilesData,
-  activeFileId: initialActiveFileId,
-  fileContents: initialFileContents,
+  filesCatalog: {},
+  openFiles: initialDerivedState.openFiles,
+  activeFileId: initialDerivedState.activeFileId,
+  fileContents: initialDerivedState.fileContents,
   draggingId: null,
   dropIndicator: { tabId: null, side: null },
 
@@ -106,20 +139,19 @@ export const useFileStore = create<FileState & FileActions>((set, get) => ({
   },
 
   openFile: (fileId) => {
-    const fileData = MOCK_FILES[fileId];
+    const state = get();
+    const fileData = state.filesCatalog[fileId];
     if (!fileData) {
-      console.error(`Cannot open file: ${fileId} not found in MOCK_FILES.`);
+      console.error(`Cannot open file: ${fileId} not found in catalog.`);
       return;
     }
-
-    const state = get();
     const fileAlreadyOpen = state.openFiles.some((f) => f.id === fileId);
 
     if (!fileAlreadyOpen) {
       const newOpenFile: OpenFile = {
         id: fileId,
         name: fileData.name,
-        language: fileData.language as EditorLanguageKey,
+        language: fileData.language,
       };
 
       const newStateUpdate: Partial<FileState> = {
@@ -194,4 +226,24 @@ export const useFileStore = create<FileState & FileActions>((set, get) => ({
       matchInfo: null,
       // searchOptions are intentionally not reset here, user might want to keep them
     }),
+  initializeFromCatalog: (catalog, preferredOpenIds) => {
+    const derivedState = buildOpenFileState(
+      catalog,
+      preferredOpenIds && preferredOpenIds.length > 0
+        ? preferredOpenIds
+        : DEFAULT_INITIAL_OPEN_FILE_IDS
+    );
+
+    set({
+      filesCatalog: catalog,
+      openFiles: derivedState.openFiles,
+      activeFileId: derivedState.activeFileId,
+      fileContents: derivedState.fileContents,
+      draggingId: null,
+      dropIndicator: { tabId: null, side: null },
+      searchTerm: "",
+      replaceTerm: "",
+      matchInfo: null,
+    });
+  },
 }));

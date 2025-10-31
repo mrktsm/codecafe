@@ -75,6 +75,8 @@ docker-compose up
 
 Access the app at http://localhost:80
 
+By default the backend mounts `./default-files` and exposes its contents through the editor. If you want to serve a different local project, edit the `server` volume mapping in `docker-compose.yml` (replace `./default-files` with your desired path) before running `docker-compose up`.
+
 For detailed setup instructions, development guidelines, and contribution information, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## On the Horizon

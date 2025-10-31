@@ -12,6 +12,7 @@ import {
   TerminalHandle,
   SearchOptions,
   MatchInfo,
+  EditorLanguageKey,
 } from "./types/editor";
 
 import {
@@ -25,7 +26,6 @@ import {
   DEFAULT_WEBVIEW_WIDTH_FRACTION,
   MIN_WEBVIEW_WIDTH,
 } from "./constants/layout";
-import { MOCK_FILES } from "./constants/mockFiles";
 import { isExecutableLanguage } from "./utils/languageUtils";
 import { useResizablePanel } from "./hooks/useResizablePanel";
 import { useCollaborationSession } from "./hooks/useCollaborationSession";
@@ -35,6 +35,7 @@ import Sidebar from "./components/Sidebar";
 import MainEditorArea from "./components/MainEditorArea";
 import { useFileStore } from "./store/useFileStore";
 import { Analytics } from "@vercel/analytics/react";
+import type { CatalogFile } from "./types/editor";
 
 // Interface for Monaco's find controller
 interface FindControllerInterface extends editor.IEditorContribution {
@@ -57,6 +58,26 @@ interface FindControllerInterface extends editor.IEditorContribution {
   closeFindWidget(): void;
 }
 
+interface DefaultFileResponse {
+  id?: string;
+  name: string;
+  language?: string;
+  content: string;
+}
+
+const inferLanguageFromFileName = (fileName: string): EditorLanguageKey => {
+  const normalized = fileName.toLowerCase();
+  if (normalized.endsWith(".html")) return "html";
+  if (normalized.endsWith(".css")) return "css";
+  if (normalized.endsWith(".tsx")) return "typescript";
+  if (normalized.endsWith(".ts")) return "typescript";
+  if (normalized.endsWith(".jsx")) return "javascript";
+  if (normalized.endsWith(".js")) return "javascript";
+  if (normalized.endsWith(".json")) return "json";
+  if (normalized.endsWith(".md")) return "markdown";
+  return "plaintext";
+};
+
 const App = () => {
   // REFS
   const terminalRef = useRef<TerminalHandle | null>(null);
@@ -65,6 +86,7 @@ const App = () => {
   const mainContentRef = useRef<HTMLDivElement>(null);
   const tabContainerRef = useRef<HTMLDivElement>(null);
   const editorInstanceRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const defaultFilesFetchAttempted = useRef(false);
 
   // STATE
   const [activeIcon, setActiveIcon] = useState<string | null>(null);
@@ -72,11 +94,15 @@ const App = () => {
   const { openFiles, activeFileId } = useFileStore();
 
   const fileContents = useFileStore((state) => state.fileContents);
+  const filesCatalog = useFileStore((state) => state.filesCatalog);
 
   const openFile = useFileStore((state) => state.openFile);
   const closeFile = useFileStore((state) => state.closeFile);
   const switchTab = useFileStore((state) => state.switchTab);
   const setFileContent = useFileStore((state) => state.setFileContent);
+  const initializeFromCatalog = useFileStore(
+    (state) => state.initializeFromCatalog
+  );
 
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
 
@@ -607,6 +633,71 @@ const App = () => {
     return Array.from(uniqueUsersMap.values());
   }, [remoteUsers, userId]);
 
+  useEffect(() => {
+    if (defaultFilesFetchAttempted.current) {
+      return;
+    }
+
+    defaultFilesFetchAttempted.current = true;
+
+    const loadDefaultFilesFromRepository = async () => {
+      try {
+        const response = await axios.get<DefaultFileResponse[]>(
+          `${import.meta.env.VITE_BACKEND_URL}/api/files/defaults`
+        );
+        const repositoryFiles = response.data;
+
+        if (Array.isArray(repositoryFiles) && repositoryFiles.length > 0) {
+          const catalog = repositoryFiles.reduce(
+            (acc, file) => {
+              const fileId = file.id ?? file.name;
+              if (!fileId || !file.name || typeof file.content !== "string") {
+                return acc;
+              }
+
+              const normalizedLanguage =
+                (file.language as EditorLanguageKey | undefined) ??
+                inferLanguageFromFileName(fileId);
+
+              acc[fileId] = {
+                name: file.name,
+                language: normalizedLanguage,
+                content: file.content,
+              };
+
+              return acc;
+            },
+            {} as Record<string, CatalogFile>
+          );
+
+          if (Object.keys(catalog).length > 0) {
+            const preferredIds = [
+              "index.html",
+              "style.css",
+              "script.js",
+            ].filter((id) => catalog[id] !== undefined);
+
+            const fallbackOrder = repositoryFiles
+              .map((file) => file.id ?? file.name)
+              .filter((id): id is string => !!id && catalog[id] !== undefined);
+
+            initializeFromCatalog(
+              catalog,
+              preferredIds.length > 0 ? preferredIds : fallbackOrder
+            );
+          }
+        }
+      } catch (error) {
+        console.error(
+          "Failed to load default files from local repository:",
+          error
+        );
+      }
+    };
+
+    loadDefaultFilesFromRepository();
+  }, [initializeFromCatalog]);
+
   // Handle sending chat messages
   const handleSendChatMessage = useCallback(
     (message: string) => {
@@ -775,7 +866,7 @@ const App = () => {
           activeFileId={activeFileId}
           isSessionActive={isSessionActive}
           handleOpenFile={(fileId) => openFile(fileId, isSessionActive)}
-          mockFiles={MOCK_FILES}
+          fileCatalog={filesCatalog}
           onSearchChange={handleSearchChange}
           onReplaceChange={handleReplaceChange}
           onToggleSearchOption={handleToggleSearchOption}

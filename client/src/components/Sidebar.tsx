@@ -12,8 +12,12 @@ import SearchPanel from "./SearchPanel";
 import SessionParticipantsPanel from "./SessionParticipantsPanel";
 import FileExplorerPanel from "./FileExplorerPanel";
 import { RemoteUser, ChatMessageType } from "../types/props";
-import { JoinStateType, SearchOptions, MatchInfo } from "../types/editor";
-import { MockFile } from "../constants/mockFiles";
+import {
+  JoinStateType,
+  SearchOptions,
+  MatchInfo,
+  CatalogFile,
+} from "../types/editor";
 import { ICON_BAR_WIDTH, EXPLORER_HANDLE_WIDTH } from "../constants/layout";
 import { COLORS } from "../constants/colors";
 
@@ -39,7 +43,7 @@ interface SidebarProps {
   isSessionActive: boolean;
   activeFileId: string | null;
   handleOpenFile: (fileId: string) => void;
-  mockFiles: { [key: string]: MockFile };
+  fileCatalog: { [key: string]: CatalogFile };
   onSearchChange: (term: string, options: SearchOptions) => void;
   onReplaceChange: (value: string) => void;
   onToggleSearchOption: (optionKey: keyof SearchOptions) => void;
@@ -77,7 +81,7 @@ const Sidebar = ({
   isSessionActive,
   activeFileId,
   handleOpenFile,
-  mockFiles,
+  fileCatalog,
   onSearchChange,
   onReplaceChange,
   onToggleSearchOption,
@@ -207,9 +211,8 @@ const Sidebar = ({
             }`}
           >
             <FileExplorerPanel
-              isSessionActive={isSessionActive}
               handleOpenFile={handleOpenFile}
-              mockFiles={mockFiles}
+              fileCatalog={fileCatalog}
               activeFileId={activeFileId}
             />
           </div>

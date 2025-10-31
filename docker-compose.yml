@@ -11,6 +11,9 @@ services:
       - SPRING_REDIS_PORT=6379
       # - SPRING_REDIS_PASSWORD=yourpassword #
       - SPRING_REDIS_SSL_ENABLED=false
+      - CODECAFE_DEFAULT_FILES_REPOSITORY_PATH=/app/default-files
+    volumes:
+      - ./default-files:/app/default-files:ro
     depends_on:
       - redis
     networks:

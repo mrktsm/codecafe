@@ -5,20 +5,18 @@ import {
   languageColorMap,
   defaultIconColor,
 } from "../constants/mappings";
-import { EditorLanguageKey } from "../types/editor";
-import { MockFile } from "../constants/mockFiles";
+import { CatalogFile, EditorLanguageKey } from "../types/editor";
 
 // Props for FileExplorerPanel - initially minimal, might adjust
 interface FileExplorerPanelProps {
-  isSessionActive: boolean;
   handleOpenFile: (fileId: string) => void;
-  mockFiles: { [key: string]: MockFile };
+  fileCatalog: { [key: string]: CatalogFile };
   activeFileId: string | null;
 }
 
 const FileExplorerPanel = ({
   handleOpenFile,
-  mockFiles,
+  fileCatalog,
   activeFileId,
 }: FileExplorerPanelProps) => {
   const [isProjectExpanded, setIsProjectExpanded] = useState(true);
@@ -62,37 +60,45 @@ const FileExplorerPanel = ({
           <div className="relative">
             <div className="absolute top-0 bottom-0 left-[12px] w-px bg-stone-600/50 z-0"></div>
 
-            {Object.entries(mockFiles).map(([id, file]) => {
-              const IconComponent =
-                languageIconMap[file.language as EditorLanguageKey] || VscFile;
-              const iconColor =
-                languageColorMap[file.language as EditorLanguageKey] ||
-                defaultIconColor;
-              return (
-                <div
-                  key={id}
-                  className={`relative flex items-center text-sm py-1 cursor-pointer w-full pl-4 z-10 ${
-                    activeFileId === id
-                      ? "bg-stone-600/50 shadow-[inset_0_1px_0_#78716c,inset_0_-1px_0_#78716c] hover:bg-stone-600/50"
-                      : "hover:bg-stone-700/50"
-                  }`}
-                  onClick={() => handleOpenFile(id)}
-                  title={file.name}
-                >
-                  <IconComponent
-                    size={18}
-                    className={`mr-1 flex-shrink-0 ${iconColor}`}
-                  />
-                  <span
-                    className={`w-full truncate ${
-                      activeFileId === id ? "text-stone-100" : "text-stone-400"
+            {Object.keys(fileCatalog).length === 0 ? (
+              <div className="pl-4 pr-2 py-3 text-sm text-stone-500">
+                No files loaded yet.
+              </div>
+            ) : (
+              Object.entries(fileCatalog).map(([id, file]) => {
+                const IconComponent =
+                  languageIconMap[file.language as EditorLanguageKey] || VscFile;
+                const iconColor =
+                  languageColorMap[file.language as EditorLanguageKey] ||
+                  defaultIconColor;
+                return (
+                  <div
+                    key={id}
+                    className={`relative flex items-center text-sm py-1 cursor-pointer w-full pl-4 z-10 ${
+                      activeFileId === id
+                        ? "bg-stone-600/50 shadow-[inset_0_1px_0_#78716c,inset_0_-1px_0_#78716c] hover:bg-stone-600/50"
+                        : "hover:bg-stone-700/50"
                     }`}
+                    onClick={() => handleOpenFile(id)}
+                    title={file.name}
                   >
-                    {file.name}
-                  </span>
-                </div>
-              );
-            })}
+                    <IconComponent
+                      size={18}
+                      className={`mr-1 flex-shrink-0 ${iconColor}`}
+                    />
+                    <span
+                      className={`w-full truncate ${
+                        activeFileId === id
+                          ? "text-stone-100"
+                          : "text-stone-400"
+                      }`}
+                    >
+                      {file.name}
+                    </span>
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </div>

@@ -38,6 +38,12 @@ export interface OpenFile {
   language: EditorLanguageKey;
 }
 
+export interface CatalogFile {
+  name: string;
+  language: EditorLanguageKey;
+  content: string;
+}
+
 export interface TerminalHandle {
   writeToTerminal: (output: string) => void;
   clear: () => void;
