@@ -1,0 +1,58 @@
+services:
+  api:
+    build:
+      context: ../server
+    image: codecafe-api:production
+    restart: unless-stopped
+    environment:
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: "6379"
+      SPRING_REDIS_SSL_ENABLED: "false"
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: never
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_COMPONENTS: never
+    mem_limit: 768m
+    cpus: 1.0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      default:
+      public:
+        aliases: [codecafe-api]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    mem_limit: 256m
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  public:
+    external: true
+    name: oci_default
+
+volumes:
+  redis_data:

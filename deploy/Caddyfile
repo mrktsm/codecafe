@@ -1,0 +1,40 @@
+(codecafe_frontend) {
+	encode zstd gzip
+	root * /data/codecafe/current
+	header X-Content-Type-Options nosniff
+	header Strict-Transport-Security "max-age=63072000"
+	@api path /api/* /ws /ws/*
+	handle @api {
+		header Cache-Control "no-store"
+		reverse_proxy codecafe-api:8080
+	}
+	handle /_vercel/insights/* {
+		respond "" 204
+	}
+	handle /assets/* {
+		root * /data/codecafe
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+codecafe.app {
+	import codecafe_frontend
+}
+
+www.codecafe.app {
+	redir https://codecafe.app{uri} permanent
+}
+
+api.codecafe.app {
+	encode zstd gzip
+	header Cache-Control "no-store"
+	header X-Content-Type-Options nosniff
+	header Strict-Transport-Security "max-age=63072000"
+	reverse_proxy codecafe-api:8080
+}
