@@ -7,6 +7,28 @@ on:
     branches: [main, develop]
 
 jobs:
+  hosting-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Build frontend for the new host
+        working-directory: client
+        env:
+          VITE_BACKEND_URL: ""
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Validate production hosting configuration
+        run: |
+          sh -n deploy/publish.sh
+          docker compose -p codecafe -f deploy/compose.yml config --quiet
+          docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.4 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
   server-test:
     runs-on: ubuntu-latest
     steps:
