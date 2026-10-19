@@ -34,7 +34,6 @@ import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import MainEditorArea from "./components/MainEditorArea";
 import { useFileStore } from "./store/useFileStore";
-import { Analytics } from "@vercel/analytics/react";
 
 // Interface for Monaco's find controller
 interface FindControllerInterface extends editor.IEditorContribution {
@@ -840,7 +839,6 @@ const App = () => {
           }}
         />
       )}
-      <Analytics />
     </div>
   );
 };

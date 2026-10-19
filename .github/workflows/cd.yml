@@ -1,85 +1,98 @@
-name: CD Pipeline
+name: Deploy CodeCafe
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'client/**'
+      - 'server/**'
+      - 'deploy/**'
+      - '.github/workflows/cd.yml'
   workflow_dispatch:
+    inputs:
+      deploy_backend:
+        description: Rebuild and restart the CodeCafe backend
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-codecafe
+  cancel-in-progress: false
 
 jobs:
-  deploy-backend-to-ec2:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - uses: actions/checkout@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Build, tag, and push server image to Amazon ECR
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Build production frontend
+        working-directory: client
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: codecafe-backend
-          IMAGE_TAG: ${{ github.sha }}
+          VITE_BACKEND_URL: ''
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./server
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Deploy to EC2
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Determine backend changes
+        id: backend
         env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST_DNS: ${{ secrets.EC2_HOST_DNS }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: codecafe-backend
-          IMAGE_TAG: ${{ github.sha }}
-          SPRING_REDIS_HOST: master.codecafe-redis-node.sra8pa.use2.cache.amazonaws.com
-          SPRING_REDIS_PORT: 6379
-          SPRING_REDIS_SSL_ENABLED: true
+          EVENT_NAME: ${{ github.event_name }}
+          REBUILD: ${{ inputs.deploy_backend }}
+          BEFORE: ${{ github.event.before }}
         run: |
-          echo "Starting deployment to EC2 instance: $EC2_HOST_DNS"
-
-          mkdir -p ~/.ssh/
-          echo "$EC2_SSH_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST_DNS" >> ~/.ssh/known_hosts
-
-          ssh -i ~/.ssh/id_rsa ec2-user@$EC2_HOST_DNS << EOF
-            echo "Logged into EC2 instance: $EC2_HOST_DNS"
-            
-            echo "Logging into AWS ECR..."
-            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-            
-            echo "Pulling latest image from ECR..."
-            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
-            
-            echo "Stopping and removing existing container if any..."
-            docker stop codecafe-backend || true 
-            docker rm codecafe-backend || true
-            
-            echo "Attempting to stop old nohup Java process..."
-            ps aux | grep 'java -jar backend-redis-fix-v1.jar' | grep -v grep | awk '{print \$2}' | xargs -r kill -9 || true
-            
-            echo "Running new Docker container..."
-            docker run -d --name codecafe-backend \
-              -p 127.0.0.1:8080:8080 \
-              -e SPRING_REDIS_HOST=$SPRING_REDIS_HOST \
-              -e SPRING_REDIS_PORT=$SPRING_REDIS_PORT \
-              -e SPRING_REDIS_SSL_ENABLED=$SPRING_REDIS_SSL_ENABLED \
-              $ECR_REGISTRY/$ECR_REPOSITORY:latest
-              
-            echo "Listing running Docker containers..."
-            docker ps
-            
-            echo "Deployment script finished."
-          EOF
+          changed=false
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            changed="$REBUILD"
+          elif ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed=true
+          elif git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -Eq '^(server/|deploy/compose.yml)'; then
+            changed=true
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+      - name: Set up deployment SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_SSH_HOST_KEY: ${{ vars.VPS_SSH_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          test -n "$VPS_SSH_HOST_KEY"
+          printf '%s %s\n' "$VPS_HOST" "$VPS_SSH_HOST_KEY" > ~/.ssh/known_hosts
+      - name: Deploy backend when changed
+        if: steps.backend.outputs.changed == 'true'
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" 'mkdir -p ~/codecafe/server ~/codecafe/deploy'
+          rsync -az --delete --exclude target server/ "$VPS_USER@$VPS_HOST:~/codecafe/server/"
+          scp deploy/compose.yml "$VPS_USER@$VPS_HOST:~/codecafe/deploy/compose.yml"
+          ssh "$VPS_USER@$VPS_HOST" 'cd ~/codecafe && docker compose -p codecafe -f deploy/compose.yml build api && docker compose -p codecafe -f deploy/compose.yml up -d --wait --wait-timeout 120'
+      - name: Publish frontend
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          release_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_dir="codecafe/frontend-releases/$release_id"
+          ssh "$VPS_USER@$VPS_HOST" "mkdir -p ~/$remote_dir ~/codecafe/deploy"
+          rsync -az client/dist/ "$VPS_USER@$VPS_HOST:~/$remote_dir/"
+          scp deploy/Caddyfile "$VPS_USER@$VPS_HOST:~/$remote_dir.Caddyfile.next"
+          scp deploy/publish.sh "$VPS_USER@$VPS_HOST:~/codecafe/deploy/publish.sh"
+          ssh "$VPS_USER@$VPS_HOST" "sh ~/codecafe/deploy/publish.sh ~/$remote_dir '$release_id' ~/$remote_dir.Caddyfile.next"
+      - name: Check frontend and collaboration backend
+        run: |
+          curl --fail --silent --show-error --retry 3 https://codecafe.app/ | grep -q 'id="root"'
+          curl --fail --silent --show-error https://codecafe.app/api/health/redis | grep -q 'Redis connection is OK'
+          curl --fail --silent --show-error https://codecafe.app/ws/info | grep -q '"websocket":true'
+          curl --fail --silent --show-error https://api.codecafe.app/actuator/health | grep -q '"status":"UP"'
