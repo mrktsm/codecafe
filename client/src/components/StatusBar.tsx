@@ -10,12 +10,7 @@ const StatusBar = ({
   const getStatusIndicator = (status: ConnectionStatus) => {
     switch (status) {
       case "connected":
-        return (
-          <span
-            className="w-2 h-2 bg-green-500 rounded-full inline-block mr-1.5"
-            title="Connected"
-          ></span>
-        );
+        return null;
       case "disconnected":
         return (
           <span
